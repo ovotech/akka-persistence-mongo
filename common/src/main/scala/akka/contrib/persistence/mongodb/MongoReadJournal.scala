@@ -32,10 +32,9 @@ class MongoReadJournal(system: ExtendedActorSystem, config: Config) extends Read
 
 object ScalaDslMongoReadJournal {
 
-  val eventToEventEnvelope: Flow[Event, EventEnvelope, NotUsed] = {
-    // TODO Use zipWithIndex in akka 2.4.14
-    Flow[Event].zip(Source.unfold(0L)(s => Some((s + 1, s)))).map { case (event, offset) => event.toEnvelope(offset) }
-  }
+  val eventToEventEnvelope: Flow[Event, EventEnvelope, NotUsed] =
+    Flow[Event].map(_.toEnvelope)
+
 
   implicit class RichFlow[Mat](source: Source[Event, Mat]) {
 
@@ -53,9 +52,14 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
 
   import ScalaDslMongoReadJournal._
 
-  def currentAllEvents(): Source[EventEnvelope, NotUsed] = impl.currentAllEvents.toEventEnvelopes
+  def currentAllEvents(): Source[EventEnvelope, NotUsed] =
+    currentAllEvents(0L)
 
-  override def currentPersistenceIds(): Source[String, NotUsed] = impl.currentPersistenceIds
+  def currentAllEvents(offset: Long): Source[EventEnvelope, NotUsed] =
+    impl.currentAllEvents(offset).toEventEnvelopes
+
+  override def currentPersistenceIds(): Source[String, NotUsed] =
+    impl.currentPersistenceIds
 
   override def currentEventsByPersistenceId(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long): Source[EventEnvelope, NotUsed] = {
     require(persistenceId != null, "PersistenceId must not be null")
@@ -63,9 +67,16 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
   }
 
   def allEvents(): Source[EventEnvelope, NotUsed] = {
-    val pastSource = impl.currentAllEvents
+    allEvents(0L)
+  }
+
+  def allEvents(offset: Long): Source[EventEnvelope, NotUsed] = {
+    val pastSource = impl.currentAllEvents(offset)
     val realtimeSource = Source.actorRef(100, OverflowStrategy.dropTail).mapMaterializedValue(impl.subscribeJournalEvents)
-    (pastSource ++ realtimeSource).via(new RemoveDuplicatedEventsByPersistenceId).toEventEnvelopes
+    (pastSource ++ realtimeSource)
+      .filter(_.timestamp >= offset)
+      .via(new RemoveDuplicatedEventsByPersistenceId)
+      .toEventEnvelopes
   }
 
   override def eventsByPersistenceId(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long): Source[EventEnvelope, NotUsed] = {
@@ -101,8 +112,17 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
     val pastSource = impl.currentPersistenceIds
     val realtimeSource = Source.actorRef[Event](100, OverflowStrategy.dropHead)
       .map(_.pid)
-      .mapMaterializedValue{actor => impl.subscribeJournalEvents(actor); NotUsed}
-    (pastSource ++ realtimeSource).via(new RemoveDuplicates)
+      .mapMaterializedValue { actor => impl.subscribeJournalEvents(actor); NotUsed }
+    (pastSource ++ realtimeSource)
+      .statefulMapConcat { () =>
+        val processeds = mutable.Set.empty[String]
+        candidate => if (processeds(candidate)) {
+          List.empty
+        } else {
+          processeds += candidate
+          List(candidate)
+      }
+      }
   }
 }
 
@@ -300,36 +320,9 @@ class RemoveDuplicatedEventsByPersistenceId extends GraphStage[FlowShape[Event, 
 
 }
 
-class RemoveDuplicates[T] extends GraphStage[FlowShape[T, T]] {
-
-  private val in: Inlet[T] = Inlet("in")
-  private val out: Outlet[T] = Outlet("out")
-
-  override val shape: FlowShape[T, T] = FlowShape(in, out)
-
-  override def createLogic(inheritedAttributes: Attributes): GraphStageLogic = new GraphStageLogic(shape) with InHandler with OutHandler {
-
-    private var processed = Set.empty[T]
-
-    override def onPush(): Unit = {
-      val element = grab(in)
-      if(processed.contains(element)) {
-        pull(in)
-      } else {
-        processed += element
-        push(out, element)
-      }
-    }
-
-    override def onPull(): Unit = pull(in)
-
-    setHandlers(in, out, this)
-  }
-
-}
 
 trait MongoPersistenceReadJournallingApi {
-  def currentAllEvents(implicit m: Materializer): Source[Event, NotUsed]
+  def currentAllEvents(offset: Long)(implicit m: Materializer): Source[Event, NotUsed]
 
   def currentPersistenceIds(implicit m: Materializer): Source[String, NotUsed]
 

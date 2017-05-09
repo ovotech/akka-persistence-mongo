@@ -89,6 +89,7 @@ class MongoSettings(val config: Config) {
   val JournalCollection: String = config.getString("journal-collection")
   val JournalIndex: String = config.getString("journal-index")
   val JournalSeqNrIndex: String = config.getString("journal-seq-nr-index")
+  val JournalTimestampSeqNrIndex: String = config.getString("journal-timestamp-seq-nr-index")
   val JournalWriteConcern: String = config.getString("journal-write-concern")
   val JournalWTimeout: FiniteDuration = config.getDuration("journal-wtimeout",MILLISECONDS).millis
   val JournalFSync: Boolean = config.getBoolean("journal-fsync")
