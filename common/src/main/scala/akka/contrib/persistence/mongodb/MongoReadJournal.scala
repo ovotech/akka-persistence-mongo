@@ -217,7 +217,7 @@ private[mongodb] class LiveEventsByPersistenceId(pastSource: Source[Event,NotUse
     case Status.Failure(t) =>
       sender() ! Ack
       log.error(t,s"[$logHeader] Failure while streaming eventsByPersistenceId for id $persistenceId, stopping stream")
-      context.stop(self)
+      onErrorThenStop(t)
   }
 
   private def past(nextSequenceNr: Long, buffered: Seq[Event]): Receive =

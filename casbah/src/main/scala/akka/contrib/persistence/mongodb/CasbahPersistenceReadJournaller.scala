@@ -7,6 +7,7 @@
 package akka.contrib.persistence.mongodb
 
 import akka.NotUsed
+import akka.actor.Status.Failure
 import akka.actor.{ActorRef, Props}
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
@@ -15,6 +16,7 @@ import com.mongodb.{Bytes, DBObject}
 
 import scala.concurrent.Future
 import scala.util.Random
+import scala.util.control.NonFatal
 
 object CurrentAllPersistenceIds {
   def props(driver: CasbahMongoDriver): Props = Props(new CurrentAllPersistenceIds(driver))
@@ -144,6 +146,8 @@ class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStr
           events.foreach(driver.actorSystem.eventStream.publish)
         }
       }
+    } recover { case NonFatal(thrown) =>
+      driver.actorSystem.eventStream.publish(Failure(thrown))
     }
     ()
   }
@@ -167,7 +171,7 @@ class CasbahPersistenceReadJournaller(driver: CasbahMongoDriver) extends MongoPe
     Source.actorPublisher[Event](CurrentEventsByPersistenceId.props(driver, persistenceId, fromSeq, toSeq)).mapMaterializedValue(_ => NotUsed)
 
   override def subscribeJournalEvents(subscriber: ActorRef): Unit = {
-    driver.actorSystem.eventStream.subscribe(subscriber, classOf[Event])
+    Seq(classOf[Event], classOf[Failure]).foreach(driver.actorSystem.eventStream.subscribe(subscriber, _))
     ()
   }
 }
