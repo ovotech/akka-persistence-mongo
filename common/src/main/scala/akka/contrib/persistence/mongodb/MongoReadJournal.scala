@@ -15,6 +15,7 @@ import com.typesafe.config.Config
 
 import scala.annotation.tailrec
 import scala.collection.mutable
+import scala.util.{Failure, Success, Try}
 
 object MongoReadJournal {
   val Identifier = "akka-contrib-mongodb-persistence-readjournal"
@@ -336,7 +337,10 @@ trait SyncActorPublisher[A, Cursor] extends ActorPublisher[A] with ActorLogging 
   import ActorPublisherMessage._
 
   override def preStart(): Unit = {
-    context.become(streaming(initialCursor, 0))
+    Try(initialCursor) match {
+      case Success(cursor) => context.become(streaming(cursor, 0))
+      case Failure(thrown) => context.become(failing(thrown))
+    }
     super.preStart()
   }
 
@@ -351,6 +355,10 @@ trait SyncActorPublisher[A, Cursor] extends ActorPublisher[A] with ActorLogging 
   protected def discard(c: Cursor): Unit
 
   def receive: Receive = Actor.emptyBehavior
+
+  def failing(thrown: Throwable): Receive = {
+    case _ => onErrorThenStop(thrown)
+  }
 
   def streaming(cursor: Cursor, offset: Long): Receive = {
     case _: Cancel | SubscriptionTimeoutExceeded =>
