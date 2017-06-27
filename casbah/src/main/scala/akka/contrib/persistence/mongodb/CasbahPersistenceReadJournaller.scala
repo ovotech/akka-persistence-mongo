@@ -14,8 +14,9 @@ import akka.stream.scaladsl.Source
 import com.mongodb.casbah.Imports._
 import com.mongodb.{Bytes, DBObject}
 
+import scala.annotation.tailrec
 import scala.concurrent.Future
-import scala.util.Random
+import scala.util.{Random, Try}
 import scala.util.control.NonFatal
 
 object CurrentAllPersistenceIds {
@@ -64,7 +65,7 @@ class CurrentAllEvents(val offset: Long, val driver: CasbahMongoDriver) extends 
 
   override protected def initialCursor: Stream[Event] = {
 
-    val query = MongoDBObject(TIMESTAMP->MongoDBObject("$gte"->offset))
+    val query = MongoDBObject(TIMESTAMP->MongoDBObject("$gt"->offset))
     val orderBy = MongoDBObject(TIMESTAMP->1, FROM->1)
 
     for {
@@ -137,18 +138,25 @@ class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStr
 
   override def publishEvents(): Unit = {
     implicit val ec = driver.querySideDispatcher
-    Future {
-      cursor().foreach { next =>
-        if (next.keySet().contains(EVENTS)) {
-          val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
-            driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+
+    @tailrec
+    def loop(): Unit =
+      Try {
+        cursor().foreach { next =>
+          if (next.keySet().contains(EVENTS)) {
+            val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
+              driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+            }
+            events.foreach(driver.actorSystem.eventStream.publish)
           }
-          events.foreach(driver.actorSystem.eventStream.publish)
         }
+      } match { case scala.util.Failure(NonFatal(ex)) =>
+        driver.actorSystem.eventStream.publish(Failure(ex))
+        Thread.sleep(1000)
+        loop()
       }
-    } recover { case NonFatal(thrown) =>
-      driver.actorSystem.eventStream.publish(Failure(thrown))
-    }
+
+    Future(loop())
     ()
   }
 }

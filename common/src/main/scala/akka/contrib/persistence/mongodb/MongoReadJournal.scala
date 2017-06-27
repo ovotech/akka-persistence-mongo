@@ -73,9 +73,12 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
 
   def allEvents(offset: Long): Source[EventEnvelope, NotUsed] = {
     val pastSource = impl.currentAllEvents(offset)
-    val realtimeSource = Source.actorRef(100, OverflowStrategy.dropTail).mapMaterializedValue(impl.subscribeJournalEvents)
+    val realtimeSource = Source.actorRef[Event](100, OverflowStrategy.dropTail).mapMaterializedValue(ref => {
+                                                                                  impl.subscribeJournalEvents(ref)
+                                                                                  NotUsed
+                                                                                })
     (pastSource ++ realtimeSource)
-      .filter(_.timestamp >= offset)
+      .filter(_.timestamp > offset)
       .via(new RemoveDuplicatedEventsByPersistenceId)
       .toEventEnvelopes
   }
@@ -336,13 +339,13 @@ trait SyncActorPublisher[A, Cursor] extends ActorPublisher[A] with ActorLogging 
 
   import ActorPublisherMessage._
 
-  override def preStart(): Unit = {
+  override def preStart(): Unit =
     Try(initialCursor) match {
-      case Success(cursor) => context.become(streaming(cursor, 0))
-      case Failure(thrown) => context.become(failing(thrown))
+      case Success(cursor) =>
+        context.become(streaming(cursor, 0))
+        super.preStart()
+      case Failure(thrown) => onErrorThenStop(thrown)
     }
-    super.preStart()
-  }
 
   protected def driver: MongoPersistenceDriver
 
@@ -355,10 +358,6 @@ trait SyncActorPublisher[A, Cursor] extends ActorPublisher[A] with ActorLogging 
   protected def discard(c: Cursor): Unit
 
   def receive: Receive = Actor.emptyBehavior
-
-  def failing(thrown: Throwable): Receive = {
-    case _ => onErrorThenStop(thrown)
-  }
 
   def streaming(cursor: Cursor, offset: Long): Receive = {
     case _: Cancel | SubscriptionTimeoutExceeded =>
