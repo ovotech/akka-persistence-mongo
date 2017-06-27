@@ -143,7 +143,7 @@ class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStr
     def loop(): Unit =
       Try {
         cursor().foreach { next =>
-          if (next.keySet().contains(EVENTS)) {
+          if (next.keySet().contains(EVENTS) && next.keySet().contains(TIMESTAMP)) {
             val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
               driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
             }
