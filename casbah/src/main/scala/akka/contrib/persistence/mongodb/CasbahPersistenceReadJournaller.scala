@@ -13,11 +13,13 @@ import akka.stream.Materializer
 import akka.stream.scaladsl.Source
 import com.mongodb.casbah.Imports._
 import com.mongodb.{Bytes, DBObject}
+import org.slf4j.LoggerFactory
 
 import scala.annotation.tailrec
 import scala.concurrent.Future
 import scala.util.{Random, Try}
 import scala.util.control.NonFatal
+import scala.collection.JavaConverters._
 
 object CurrentAllPersistenceIds {
   def props(driver: CasbahMongoDriver): Props = Props(new CurrentAllPersistenceIds(driver))
@@ -129,6 +131,8 @@ class CurrentEventsByPersistenceId(val driver: CasbahMongoDriver, persistenceId:
 class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStream[MongoCollection] {
   import driver.CasbahSerializers._
 
+  private val logger = LoggerFactory.getLogger(getClass)
+
   override def cursor(): MongoCollection = {
     val c = driver.realtime
     c.addOption(Bytes.QUERYOPTION_TAILABLE)
@@ -143,14 +147,21 @@ class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStr
     def loop(): Unit =
       Try {
         cursor().foreach { next =>
-          if (next.keySet().contains(EVENTS) && next.keySet().contains(TIMESTAMP)) {
+          if (next.containsField(EVENTS) && next.containsField(TIMESTAMP)) {
             val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
-              driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+              try {
+                driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+              } catch {
+                case NonFatal(ex: NoSuchElementException) =>
+                  throw new NoSuchElementException(s"Unable to deserialize BSON object ${next.toMap.asScala}: ${ex.getMessage}")
+                case NonFatal(ex) => throw ex
+              }
             }
             events.foreach(driver.actorSystem.eventStream.publish)
           }
         }
       } match { case scala.util.Failure(NonFatal(ex)) =>
+        logger.error(ex.getMessage, ex)
         driver.actorSystem.eventStream.publish(Failure(ex))
         Thread.sleep(1000)
         loop()
