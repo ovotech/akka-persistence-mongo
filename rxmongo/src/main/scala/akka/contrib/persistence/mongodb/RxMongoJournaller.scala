@@ -65,8 +65,8 @@ class RxMongoJournaller(driver: RxMongoDriver) extends MongoPersistenceJournalli
     else throw new Exception(wr.writeErrors.map(e => s"${e.errmsg} - [${e.code}]").mkString(",")) with NoStackTrace
   }
 
-  private[this] def doBatchAppend(writes: ISeq[AtomicWrite], collection: Future[BSONCollection])(implicit ec: ExecutionContext): Future[ISeq[Try[Unit]]] = {
-    val batch = writes.map(aw => Try(driver.serializeJournal(Atom[BSONDocument](aw, driver.useLegacySerialization))))
+  private[this] def doBatchAppend(writes: ISeq[AtomicWrite], timestamp: Long, collection: Future[BSONCollection])(implicit ec: ExecutionContext): Future[ISeq[Try[Unit]]] = {
+    val batch = writes.map(aw => Try(driver.serializeJournal(Atom[BSONDocument](aw, timestamp, driver.useLegacySerialization))))
 
     if (batch.forall(_.isSuccess)) {
       val collected = batch.toStream.collect { case Success(doc) => doc }
@@ -81,6 +81,9 @@ class RxMongoJournaller(driver: RxMongoDriver) extends MongoPersistenceJournalli
   }
 
   private[mongodb] override def batchAppend(writes: ISeq[AtomicWrite])(implicit ec: ExecutionContext): Future[ISeq[Try[Unit]]] = {
+
+    val timestamp = System.currentTimeMillis()
+
     val batchFuture = if (driver.useSuffixedCollectionNames) {
       val fZero = Future.successful(ISeq.empty[Try[Unit]])
 
@@ -90,16 +93,16 @@ class RxMongoJournaller(driver: RxMongoDriver) extends MongoPersistenceJournalli
         .foldLeft(fZero) { case (future, (_, hunk)) =>
           for {
             prev <- future
-            next <- doBatchAppend(hunk, driver.journal(hunk.head.persistenceId))
+            next <- doBatchAppend(hunk, timestamp, driver.journal(hunk.head.persistenceId))
           } yield prev ++ next
         }
 
     } else {
-      doBatchAppend(writes, journal)
+      doBatchAppend(writes, timestamp, journal)
     }
 
     if (driver.realtimeEnablePersistence)
-      batchFuture.andThen { case _ => doBatchAppend(writes, realtime) }
+      batchFuture.andThen { case _ => doBatchAppend(writes, timestamp, realtime) }
     else
       batchFuture
 

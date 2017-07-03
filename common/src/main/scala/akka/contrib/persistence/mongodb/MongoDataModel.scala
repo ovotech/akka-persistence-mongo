@@ -232,8 +232,12 @@ object Event {
 case class Atom(pid: String, from: Long, to: Long, timestamp: Long, events: ISeq[Event])
 
 object Atom {
+
   def apply[D](aw: AtomicWrite, useLegacySerialization: Boolean)(implicit ser: Serialization, ev: Manifest[D], dt: DocumentType[D], loadClass: LoadClass): Atom = {
-    val timestamp = System.currentTimeMillis()
+    apply(aw, System.currentTimeMillis(), useLegacySerialization)
+  }
+
+  def apply[D](aw: AtomicWrite, timestamp: Long, useLegacySerialization: Boolean)(implicit ser: Serialization, ev: Manifest[D], dt: DocumentType[D], loadClass: LoadClass): Atom = {
 
     Atom(pid = aw.persistenceId,
       timestamp = timestamp,

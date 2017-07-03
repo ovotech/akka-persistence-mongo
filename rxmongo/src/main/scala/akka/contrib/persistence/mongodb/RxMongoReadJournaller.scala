@@ -32,7 +32,6 @@ object CurrentAllEvents {
     Source.fromFuture(driver.journalCollectionsAsFuture)
       .flatMapConcat(_.map { c =>
         c.find(query)
-          .projection(BSONDocument(EVENTS -> 1))
           .sort(orderBy)
           .cursor[BSONDocument]()
           .documentSource()
@@ -86,7 +85,6 @@ object CurrentEventsByPersistenceId {
             .flatMapConcat(
               _.find(query)
                 .sort(BSONDocument(TO -> 1))
-                .projection(BSONDocument(EVENTS -> 1))
                 .cursor[BSONDocument]()
                 .documentSource()
             )
