@@ -67,7 +67,7 @@ class CurrentAllEvents(val offset: Long, val driver: CasbahMongoDriver) extends 
 
   override protected def initialCursor: Stream[Event] = {
 
-    val query = MongoDBObject(TIMESTAMP->MongoDBObject("$gt"->offset))
+    val query = MongoDBObject(TIMESTAMP ->MongoDBObject("$gte"->offset))
     val orderBy = MongoDBObject(TIMESTAMP->1, FROM->1)
 
     for {

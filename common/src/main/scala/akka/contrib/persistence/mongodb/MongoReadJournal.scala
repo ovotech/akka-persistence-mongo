@@ -78,7 +78,7 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
                                                                                   NotUsed
                                                                                 })
     (pastSource ++ realtimeSource)
-      .filter(_.timestamp > offset)
+      .filter(_.timestamp >= offset)
       .via(new RemoveDuplicatedEventsByPersistenceId)
       .toEventEnvelopes
   }
