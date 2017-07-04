@@ -54,8 +54,8 @@ class CasbahPersistenceJournaller(driver: CasbahMongoDriver) extends MongoPersis
 
   import collection.immutable.{Seq => ISeq}
 
-  private[this] def doBatchAppend(writes: ISeq[AtomicWrite], collection: MongoCollection)(implicit ec: ExecutionContext): ISeq[Try[Unit]] = {
-    val batch = writes.map(write => Try(driver.serializeJournal(Atom[DBObject](write, driver.useLegacySerialization))))
+  private[this] def doBatchAppend(writes: ISeq[AtomicWrite], timestamp: Long, collection: MongoCollection)(implicit ec: ExecutionContext): ISeq[Try[Unit]] = {
+    val batch = writes.map(write => Try(driver.serializeJournal(Atom[DBObject](write, timestamp, driver.useLegacySerialization))))
 
     if (batch.forall(_.isSuccess)) {
       val bulk = collection.initializeOrderedBulkOperation
@@ -68,20 +68,23 @@ class CasbahPersistenceJournaller(driver: CasbahMongoDriver) extends MongoPersis
   }
 
   private[mongodb] override def batchAppend(writes: ISeq[AtomicWrite])(implicit ec: ExecutionContext): Future[ISeq[Try[Unit]]] = {
+
+    val timestamp = System.currentTimeMillis()
+
     val batchFuture = Future {
       if (driver.useSuffixedCollectionNames) {
         writes.groupBy(write => driver.getJournalCollectionName(write.persistenceId)).flatMap {
-          case (_, writeSeq) => doBatchAppend(writeSeq, driver.journal(writeSeq.head.persistenceId))
+          case (_, writeSeq) => doBatchAppend(writeSeq, timestamp, driver.journal(writeSeq.head.persistenceId))
         }.to[collection.immutable.Seq]
       } else {
-        doBatchAppend(writes, journal)
+        doBatchAppend(writes, timestamp, journal)
       }
     }
 
     if (driver.realtimeEnablePersistence)
       batchFuture.flatMap { _ =>
         Future {
-          doBatchAppend(writes, realtime)
+          doBatchAppend(writes, timestamp, realtime)
         }
       }
     else

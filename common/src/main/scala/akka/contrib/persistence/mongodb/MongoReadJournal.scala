@@ -15,6 +15,7 @@ import com.typesafe.config.Config
 
 import scala.annotation.tailrec
 import scala.collection.mutable
+import scala.util.{Failure, Success, Try}
 
 object MongoReadJournal {
   val Identifier = "akka-contrib-mongodb-persistence-readjournal"
@@ -72,7 +73,10 @@ class ScalaDslMongoReadJournal(impl: MongoPersistenceReadJournallingApi)(implici
 
   def allEvents(offset: Long): Source[EventEnvelope, NotUsed] = {
     val pastSource = impl.currentAllEvents(offset)
-    val realtimeSource = Source.actorRef(100, OverflowStrategy.dropTail).mapMaterializedValue(impl.subscribeJournalEvents)
+    val realtimeSource = Source.actorRef[Event](100, OverflowStrategy.dropTail).mapMaterializedValue(ref => {
+                                                                                  impl.subscribeJournalEvents(ref)
+                                                                                  NotUsed
+                                                                                })
     (pastSource ++ realtimeSource)
       .filter(_.timestamp >= offset)
       .via(new RemoveDuplicatedEventsByPersistenceId)
@@ -217,7 +221,7 @@ private[mongodb] class LiveEventsByPersistenceId(pastSource: Source[Event,NotUse
     case Status.Failure(t) =>
       sender() ! Ack
       log.error(t,s"[$logHeader] Failure while streaming eventsByPersistenceId for id $persistenceId, stopping stream")
-      context.stop(self)
+      onErrorThenStop(t)
   }
 
   private def past(nextSequenceNr: Long, buffered: Seq[Event]): Receive =
@@ -335,10 +339,13 @@ trait SyncActorPublisher[A, Cursor] extends ActorPublisher[A] with ActorLogging 
 
   import ActorPublisherMessage._
 
-  override def preStart(): Unit = {
-    context.become(streaming(initialCursor, 0))
-    super.preStart()
-  }
+  override def preStart(): Unit =
+    Try(initialCursor) match {
+      case Success(cursor) =>
+        context.become(streaming(cursor, 0))
+        super.preStart()
+      case Failure(thrown) => onErrorThenStop(thrown)
+    }
 
   protected def driver: MongoPersistenceDriver
 

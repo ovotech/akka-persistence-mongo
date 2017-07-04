@@ -7,14 +7,19 @@
 package akka.contrib.persistence.mongodb
 
 import akka.NotUsed
+import akka.actor.Status.Failure
 import akka.actor.{ActorRef, Props}
 import akka.stream.Materializer
 import akka.stream.scaladsl.Source
 import com.mongodb.casbah.Imports._
 import com.mongodb.{Bytes, DBObject}
+import org.slf4j.LoggerFactory
 
+import scala.annotation.tailrec
 import scala.concurrent.Future
-import scala.util.Random
+import scala.util.{Random, Try}
+import scala.util.control.NonFatal
+import scala.collection.JavaConverters._
 
 object CurrentAllPersistenceIds {
   def props(driver: CasbahMongoDriver): Props = Props(new CurrentAllPersistenceIds(driver))
@@ -62,7 +67,7 @@ class CurrentAllEvents(val offset: Long, val driver: CasbahMongoDriver) extends 
 
   override protected def initialCursor: Stream[Event] = {
 
-    val query = MongoDBObject(TIMESTAMP->MongoDBObject("$gte"->offset))
+    val query = MongoDBObject(TIMESTAMP ->MongoDBObject("$gte"->offset))
     val orderBy = MongoDBObject(TIMESTAMP->1, FROM->1)
 
     for {
@@ -126,6 +131,8 @@ class CurrentEventsByPersistenceId(val driver: CasbahMongoDriver, persistenceId:
 class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStream[MongoCollection] {
   import driver.CasbahSerializers._
 
+  private val logger = LoggerFactory.getLogger(getClass)
+
   override def cursor(): MongoCollection = {
     val c = driver.realtime
     c.addOption(Bytes.QUERYOPTION_TAILABLE)
@@ -135,16 +142,32 @@ class CasbahMongoJournalStream(val driver: CasbahMongoDriver) extends JournalStr
 
   override def publishEvents(): Unit = {
     implicit val ec = driver.querySideDispatcher
-    Future {
-      cursor().foreach { next =>
-        if (next.keySet().contains(EVENTS)) {
-          val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
-            driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+
+    @tailrec
+    def loop(): Unit =
+      Try {
+        cursor().foreach { next =>
+          if (next.containsField(EVENTS) && next.containsField(TIMESTAMP)) {
+            val events = next.as[MongoDBList](EVENTS).collect { case x: DBObject =>
+              try {
+                driver.deserializeJournal(x, next.as[Long](TIMESTAMP))
+              } catch {
+                case NonFatal(ex: NoSuchElementException) =>
+                  throw new NoSuchElementException(s"Unable to deserialize BSON object ${next.toMap.asScala}: ${ex.getMessage}")
+                case NonFatal(ex) => throw ex
+              }
+            }
+            events.foreach(driver.actorSystem.eventStream.publish)
           }
-          events.foreach(driver.actorSystem.eventStream.publish)
         }
+      } match { case scala.util.Failure(NonFatal(ex)) =>
+        logger.error(ex.getMessage, ex)
+        driver.actorSystem.eventStream.publish(Failure(ex))
+        Thread.sleep(1000)
+        loop()
       }
-    }
+
+    Future(loop())
     ()
   }
 }
@@ -167,7 +190,7 @@ class CasbahPersistenceReadJournaller(driver: CasbahMongoDriver) extends MongoPe
     Source.actorPublisher[Event](CurrentEventsByPersistenceId.props(driver, persistenceId, fromSeq, toSeq)).mapMaterializedValue(_ => NotUsed)
 
   override def subscribeJournalEvents(subscriber: ActorRef): Unit = {
-    driver.actorSystem.eventStream.subscribe(subscriber, classOf[Event])
+    Seq(classOf[Event], classOf[Failure]).foreach(driver.actorSystem.eventStream.subscribe(subscriber, _))
     ()
   }
 }
